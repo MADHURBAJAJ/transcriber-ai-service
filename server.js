@@ -1,4 +1,3 @@
-cookies-from-browser
 // transcriber-service/server.js
 require("dotenv").config();
 const express = require("express");
