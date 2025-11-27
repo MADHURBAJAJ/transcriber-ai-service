@@ -3,112 +3,147 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const fetch = require("node-fetch");
+const { Innertube } = require("youtubei.js"); // ⭐ YOUTUBEI
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "5mb" }));
 
 const PORT = process.env.PORT || 5051;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 
-/* ================================================================
-   Utility: Extract YouTube video ID
-================================================================ */
+/* ========================================================================
+   Extract YouTube Video ID
+======================================================================== */
 function extractVideoId(url) {
-  if (!url) return null;
   try {
     const u = new URL(url);
-    if (u.hostname.includes("youtu.be")) {
-      return u.pathname.slice(1);
-    }
+    if (u.hostname.includes("youtu.be")) return u.pathname.slice(1);
     return u.searchParams.get("v");
   } catch {
     return null;
   }
 }
 
-/* ================================================================
-   MAIN ENDPOINT
-================================================================ */
-app.post("/transcribe", async (req, res) => {
-  const { youtube_url } = req.body || {};
-  console.log("🔥 [SERVICE HIT] youtube_url:", youtube_url);
+/* ========================================================================
+   1) Try YOUTUBEI to get REAL SIGNED AUDIO STREAM
+======================================================================== */
+async function getAudioViaYouTubei(videoId) {
+  try {
+    console.log("🔵 [YT-I] Initializing YouTubei…");
+    const yt = await Innertube.create();
 
-  if (!youtube_url) {
-    return res.status(400).json({
-      success: false,
-      message: "youtube_url required",
-    });
+    console.log("🔵 [YT-I] Fetching video info…");
+    const info = await yt.getInfo(videoId);
+
+    const audioFormats = info?.streaming_data?.adaptive_formats?.filter(
+      (f) => f.mime_type.startsWith("audio/")
+    );
+
+    if (!audioFormats || audioFormats.length === 0) {
+      console.log("⚠️ [YT-I] No audio formats available");
+      return null;
+    }
+
+    // pick highest bitrate audio
+    const bestAudio = audioFormats.sort((a, b) => b.bitrate - a.bitrate)[0];
+
+    console.log("🎉 [YT-I] SUCCESS — Audio URL fetched");
+    return bestAudio.url;
+  } catch (err) {
+    console.error("❌ [YT-I ERROR]:", err.message);
+    return null;
   }
+}
+
+/* ========================================================================
+   2) PIPED FALLBACK SYSTEM
+======================================================================== */
+async function getAudioViaPiped(videoId) {
+  const pipedInstances = [
+    "https://piped.video",
+    "https://pipedapi.kavin.rocks",
+    "https://piped.privacydev.net",
+    "https://piped.lunar.icu",
+    "https://piped.privacy.com.de",
+    "https://piped.us.projectsegfau.lt",
+    "https://pipedapi.based.store",
+  ];
+
+  for (const base of pipedInstances) {
+    const url = `${base}/streams/${videoId}`;
+    console.log("🔁 [PIPED] Trying:", url);
+
+    try {
+      const r = await fetch(url, { timeout: 10000 });
+      const text = await r.text();
+
+      if (!r.ok) continue;
+
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        continue;
+      }
+
+      const audioStreams = json?.audioStreams;
+      if (audioStreams?.length > 0) {
+        console.log("🎉 [PIPED] SUCCESS from:", base);
+        return audioStreams.sort((a, b) => b.bitrate - a.bitrate)[0].url;
+      }
+    } catch (err) {
+      console.log(`⚠️ [PIPED FAIL] ${base}:`, err.message);
+    }
+  }
+
+  return null;
+}
+
+/* ========================================================================
+   3) MAIN ENDPOINT
+======================================================================== */
+app.post("/transcribe", async (req, res) => {
+  const { youtube_url } = req.body;
+  console.log("🔥 [SERVICE HIT]:", youtube_url);
+
+  if (!youtube_url)
+    return res.status(400).json({ success: false, message: "youtube_url required" });
 
   const videoId = extractVideoId(youtube_url);
-  if (!videoId) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid YouTube URL",
-    });
-  }
+  if (!videoId)
+    return res.status(400).json({ success: false, message: "Invalid YouTube URL" });
 
   try {
-    /* ------------------------------------------------------------
-       1) Get audio stream from Piped API
-    ------------------------------------------------------------- */
-   /* ------------------------------------------------------------------
-   1) Get audio stream from MULTIPLE PIPED MIRRORS (fallback system)
-------------------------------------------------------------------- */
-const pipedInstances = [
-  "https://piped.video",
-  "https://pipedapi.kavin.rocks",
-  "https://piped.privacydev.net",
-  "https://piped.lunar.icu",
-  "https://piped.privacy.com.de",
-  "https://piped.us.projectsegfau.lt",
-  "https://pipedapi.based.store"
-];
+    /* ---------------------------------------------------------------
+       STEP A → Try YouTubei (BEST METHOD)
+    ---------------------------------------------------------------- */
+    console.log("🔵 Trying YOUTUBEI…");
+    let audioUrl = await getAudioViaYouTubei(videoId);
 
-let pipedJson = null;
-let audioStreams = null;
-
-for (const base of pipedInstances) {
-  const url = `${base}/streams/${videoId}`;
-  console.log("🔁 [PIPED] Trying instance:", url);
-
-  try {
-    const r = await fetch(url);
-    const text = await r.text();
-
-    if (!r.ok) {
-      console.error("⚠️ [PIPED ERROR]", text.slice(0, 200));
-      continue;
+    /* ---------------------------------------------------------------
+       STEP B → If YouTubei fails, try Piped fallback
+    ---------------------------------------------------------------- */
+    if (!audioUrl) {
+      console.log("🟡 YouTubei failed → Trying PIPED fallback");
+      audioUrl = await getAudioViaPiped(videoId);
     }
 
-    // try parse JSON
-    pipedJson = JSON.parse(text);
-    audioStreams = pipedJson?.audioStreams;
-
-    if (audioStreams && audioStreams.length > 0) {
-      console.log("🎉 [PIPED] SUCCESS from:", base);
-      break;
+    /* ---------------------------------------------------------------
+       STEP C → If all fail → throw
+    ---------------------------------------------------------------- */
+    if (!audioUrl) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch audio stream from YouTube or Piped.",
+      });
     }
-  } catch (err) {
-    console.error(`⚠️ [PIPED FAILED @ ${base}]`, err.message);
-  }
-}
 
-if (!audioStreams || audioStreams.length === 0) {
-  return res.status(500).json({
-    success: false,
-    message: "No audio streams found from any Piped mirror",
-  });
-}
+    console.log("🎧 FINAL AUDIO URL:", audioUrl);
 
-const audioUrl = audioStreams.sort((a, b) => b.bitrate - a.bitrate)[0].url;
-console.log("🎧 [AUDIO URL]:", audioUrl);
-
-
-    /* ------------------------------------------------------------
-       2) Send audio URL to Deepgram for transcription
-    ------------------------------------------------------------- */
+    /* ---------------------------------------------------------------
+       STEP D → Deepgram transcription
+    ---------------------------------------------------------------- */
     console.log("🎤 [DEEPGRAM] Sending audio URL…");
 
     const dgRes = await fetch(
@@ -123,47 +158,28 @@ console.log("🎧 [AUDIO URL]:", audioUrl);
       }
     );
 
-    console.log("🟠 [DEEPGRAM] HTTP:", dgRes.status);
-
     const dgText = await dgRes.text();
+    console.log("🟠 [DEEPGRAM] Status:", dgRes.status);
 
     if (!dgRes.ok) {
-      console.error("❌ [DEEPGRAM ERROR RAW]:", dgText);
+      console.error("❌ [DEEPGRAM ERROR]:", dgText);
       return res.status(500).json({
         success: false,
-        message: "Deepgram failed to process audio",
+        message: "Deepgram transcription failed",
         detail: dgText,
       });
     }
 
-    let dgJson = {};
-    try {
-      dgJson = JSON.parse(dgText);
-    } catch (e) {
-      console.error("❌ [JSON ERROR]:", e, dgText);
-      return res.status(500).json({
-        success: false,
-        message: "Deepgram returned invalid JSON",
-        detail: dgText,
-      });
-    }
-
+    const dgJson = JSON.parse(dgText);
     const transcript =
       dgJson?.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
 
-    console.log("✅ [TRANSCRIBE] Transcript length:", transcript.length);
+    console.log("✅ [TRANSCRIPT LENGTH]:", transcript.length);
 
-    /* ------------------------------------------------------------
-       3) Return transcript
-    ------------------------------------------------------------- */
-    return res.json({
-      success: true,
-      transcript,
-      chars: transcript.length,
-    });
+    return res.json({ success: true, transcript, chars: transcript.length });
 
   } catch (err) {
-    console.error("❌ [SERVICE ERROR]:", err);
+    console.error("❌ [FATAL ERROR]:", err);
     return res.status(500).json({
       success: false,
       message: err.message || "Internal server error",
@@ -171,16 +187,16 @@ console.log("🎧 [AUDIO URL]:", audioUrl);
   }
 });
 
-/* ================================================================
+/* ========================================================================
    HEALTH CHECK
-================================================================ */
+======================================================================== */
 app.get("/", (req, res) => {
-  res.json({ ok: true, service: "YouTube → Deepgram Transcriber" });
+  res.json({ ok: true, service: "YouTubei + Piped → Deepgram Transcriber" });
 });
 
-/* ================================================================
+/* ========================================================================
    START SERVER
-================================================================ */
+======================================================================== */
 app.listen(PORT, () => {
   console.log(`🚀 Transcriber service running on port ${PORT}`);
 });
