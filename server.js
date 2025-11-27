@@ -3,7 +3,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const fetch = require("node-fetch");
-const { Innertube } = require("youtubei.js"); // ⭐ YOUTUBEI
+const { Innertube } = require("youtubei");
+
 
 const app = express();
 app.use(cors());
