@@ -71,32 +71,54 @@ async function downloadAudioToFile(youtubeUrl) {
 
   console.log("🎧 [YT-DLP] Downloading to file:", outFile);
 
-  const args = [
-    youtubeUrl,
-    "-f",
-    "bestaudio",
-    "-o",
-    outFile,
-    "--user-agent",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "--referer",
-    "https://www.youtube.com/",
-    "--add-header",
-    "Origin: https://www.youtube.com",
-    "--add-header",
-    "Accept-Language: en-US,en;q=0.9",
-    "--force-ipv4",
-    "--no-check-certificates",
-    "--extractor-args", "youtube:player_client=default"
-
+  // 4 fallback extractor clients
+  const extractorOptions = [
+    { client: "android", ua: "Mozilla/5.0 (Linux; Android 10)" },
+    { client: "tvhtml5", ua: "Mozilla/5.0 (SMART-TV; Linux; Tizen)" },
+    { client: "default", ua: "Mozilla/5.0" },
+    { client: "invidious", ua: "Mozilla/5.0" },
   ];
 
-  await runCommand("yt-dlp", args, "🎧 [YT-DLP]");
+  for (let opt of extractorOptions) {
+    let videoUrl = youtubeUrl;
 
-  const stats = await fsp.stat(outFile);
-  console.log("🎧 [YT-DLP] Final audio file size:", stats.size);
+    // Invidious fallback
+    if (opt.client === "invidious") {
+      const videoId = youtubeUrl.split("v=")[1];
+      videoUrl = `https://yewtu.be/watch?v=${videoId}`;
+      console.log("🔁 [YT-DLP] Trying Invidious:", videoUrl);
+    } else {
+      console.log(`🔁 [YT-DLP] Trying client: ${opt.client}`);
+    }
 
-  return outFile;
+    const args = [
+      videoUrl,
+      "-f", "bestaudio",
+      "-o", outFile,
+      "--user-agent", opt.ua,
+      "--referer", "https://www.youtube.com/",
+      "--add-header", "Origin: https://www.youtube.com",
+      "--add-header", "Accept-Language: en-US,en;q=0.9",
+      "--force-ipv4",
+      "--no-check-certificates",
+    ];
+
+    if (opt.client !== "invidious") {
+      args.push("--extractor-args", 
+`youtube:player_client=${opt.client}`);
+    }
+
+    try {
+      await runCommand("yt-dlp", args, `🎧 [YT-DLP:${opt.client}]`);
+      console.log("🎉 [YT-DLP] Success using client:", opt.client);
+      return outFile;
+    } catch (err) {
+      console.warn(`⚠️ [YT-DLP] Failed for client ${opt.client}:`, 
+err.message);
+    }
+  }
+
+  throw new Error("yt-dlp failed for all extractor methods");
 }
 
 /* ============================================================================
