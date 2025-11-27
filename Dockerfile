@@ -1,23 +1,27 @@
-# transcriber-service/Dockerfile
-FROM node:20-alpine
+# Use Node LTS base image
+FROM node:18
 
-# Install dependencies for yt-dlp & ffmpeg
-RUN apk add --no-cache ffmpeg curl python3 py3-pip
+# Install ffmpeg and dependencies
+RUN apt-get update && apt-get install -y ffmpeg
 
 # Install yt-dlp
-RUN pip install yt-dlp
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp
 
-# App directory
+# Create app directory
 WORKDIR /app
 
-# Copy package & install
-COPY package.json package-lock.json* ./ 
+# Copy package.json
+COPY package.json ./
+
+# Install dependencies
 RUN npm install
 
-# Copy source
+# Copy the rest of the app
 COPY . .
 
 # Expose port
 EXPOSE 5051
 
-CMD ["npm", "start"]
+# Start the server
+CMD ["node", "server.js"]
