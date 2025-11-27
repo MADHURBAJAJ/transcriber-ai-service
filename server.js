@@ -87,6 +87,8 @@ async function downloadAudioToFile(youtubeUrl) {
     "Accept-Language: en-US,en;q=0.9",
     "--force-ipv4",
     "--no-check-certificates",
+    "--extractor-args", "youtube:player_client=default"
+
   ];
 
   await runCommand("yt-dlp", args, "🎧 [YT-DLP]");
