@@ -53,37 +53,58 @@ app.post("/transcribe", async (req, res) => {
     /* ------------------------------------------------------------
        1) Get audio stream from Piped API
     ------------------------------------------------------------- */
-    const pipedUrl = `https://piped.video/streams/${videoId}`;
-    console.log("🎧 [PIPED] Fetching streams:", pipedUrl);
+   /* ------------------------------------------------------------------
+   1) Get audio stream from MULTIPLE PIPED MIRRORS (fallback system)
+------------------------------------------------------------------- */
+const pipedInstances = [
+  "https://piped.video",
+  "https://pipedapi.kavin.rocks",
+  "https://piped.privacydev.net",
+  "https://piped.lunar.icu",
+  "https://piped.privacy.com.de",
+  "https://piped.us.projectsegfau.lt",
+  "https://pipedapi.based.store"
+];
 
-    const pipedRes = await fetch(pipedUrl);
-    if (!pipedRes.ok) {
-      const text = await pipedRes.text();
-      console.error("❌ [PIPED ERROR RESPONSE]:", text);
+let pipedJson = null;
+let audioStreams = null;
 
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch audio stream",
-        detail: text
-      });
+for (const base of pipedInstances) {
+  const url = `${base}/streams/${videoId}`;
+  console.log("🔁 [PIPED] Trying instance:", url);
+
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+
+    if (!r.ok) {
+      console.error("⚠️ [PIPED ERROR]", text.slice(0, 200));
+      continue;
     }
 
-    const pipedJson = await pipedRes.json();
-    // Extract audio streams
-    const audioStreams = pipedJson?.audioStreams || [];
+    // try parse JSON
+    pipedJson = JSON.parse(text);
+    audioStreams = pipedJson?.audioStreams;
 
-    if (audioStreams.length === 0) {
-      console.error("❌ [PIPED] No audio streams found");
-      return res.status(500).json({
-        success: false,
-        message: "No audio streams available for this video"
-      });
+    if (audioStreams && audioStreams.length > 0) {
+      console.log("🎉 [PIPED] SUCCESS from:", base);
+      break;
     }
+  } catch (err) {
+    console.error(`⚠️ [PIPED FAILED @ ${base}]`, err.message);
+  }
+}
 
-    // pick the highest bitrate audio
-    const audioUrl = audioStreams.sort((a, b) => b.bitrate - a.bitrate)[0].url;
+if (!audioStreams || audioStreams.length === 0) {
+  return res.status(500).json({
+    success: false,
+    message: "No audio streams found from any Piped mirror",
+  });
+}
 
-    console.log("🎧 [AUDIO URL]:", audioUrl);
+const audioUrl = audioStreams.sort((a, b) => b.bitrate - a.bitrate)[0].url;
+console.log("🎧 [AUDIO URL]:", audioUrl);
+
 
     /* ------------------------------------------------------------
        2) Send audio URL to Deepgram for transcription
